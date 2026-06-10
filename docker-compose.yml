@@ -1,5 +1,5 @@
 services:
-  opus:
+  workspace:
     build:
       args:
         USERNAME: '${USER}'
@@ -12,12 +12,12 @@ services:
           memory: 6g
     extra_hosts:
       - 'host.docker.internal:host-gateway'
-    hostname: opus
+    hostname: workspace
     ipc: host
     network_mode: host
     shm_size: 1g
     volumes:
-      - ..:/workspace/opus:cached
+      - ..:/workspace:cached
       - ${HOME}/.bash_history:/home/${USER}/.bash_history:cached
       - ${HOME}/.claude:/home/${USER}/.claude:cached
       - ${HOME}/.claude.json:/home/${USER}/.claude.json:cached

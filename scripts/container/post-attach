@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LOG_DIR="/workspace/opus/.devcontainer/logs"
+LOG_DIR="/workspace/.devcontainer/logs"
 mkdir -p "$LOG_DIR"
 exec > >(tee "$LOG_DIR/container.log") 2>&1
 

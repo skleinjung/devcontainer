@@ -52,7 +52,7 @@
   "portsAttributes": {},
   "init": true,
   "initializeCommand": ".devcontainer/scripts/host/initialize.sh",
-  "name": "Opus",
+  "name": "Workspace",
   "overrideCommand": true,
   "postAttachCommand": "/usr/local/bin/post-attach",
   "postCreateCommand": "/usr/local/bin/post-create",
@@ -61,6 +61,6 @@
     // "SSH_AUTH_SOCK": "/tmp/ssh-filter/agent.sock"
   },
   "remoteUser": "${localEnv:USER}",
-  "service": "opus",
-  "workspaceFolder": "/workspace/opus"
+  "service": "workspace",
+  "workspaceFolder": "/workspace"
 }
