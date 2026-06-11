@@ -1,36 +1,37 @@
 #!/usr/bin/env bash
 #
-# gh-token-get — print a currently-valid GitHub token, re-minting via KMS when stale.
+# gh-token-get — print a currently-valid GitHub token for gh/git.
 #
-# Called by the `gh` wrapper (and thus by git, via `gh auth git-credential`) whenever gh/git needs a
-# token — so it MUST be cheap on the hot path: read the cache, and only mint (KMS + GitHub API) when
-# the cached token is near expiry. On any failure it prints nothing -> the caller is simply
-# unauthenticated (fail-open). Minting works whenever the ambient AWS creds are valid.
+# Called by the `gh` wrapper (and thus by git, via `gh auth git-credential`) whenever gh/git
+# needs a token. The ONLY source is the pre-scoped token the admin sidecar vends to the /creds
+# shelf ("<exp_epoch> <token>"); this container has no minting capability (no kms:Sign — see
+# /workspace/.devcontainer/README.md). $GH_TOKEN_SHELF selects the token file, for consumers
+# that need a token vended under a different name. On any failure it prints nothing -> the
+# caller is simply unauthenticated (fail-open), with a stderr breadcrumb explaining why.
 #
 set -euo pipefail
 
-CACHE="${GH_TOKEN_CACHE:-${XDG_RUNTIME_DIR:-/tmp}/gh-token.$(id -u)}"
-SKEW="${GH_TOKEN_SKEW:-300}"   # refresh when < 5 min remaining
+SHELF_TOKEN="${GH_TOKEN_SHELF:-/creds/github/opus}"
+SKEW="${GH_TOKEN_SKEW:-300}" # treat tokens with < 5 min remaining as expired
 now=$(date +%s)
 
-emit_if_fresh() {
-  local line exp tok
-  line="$(cat "$CACHE" 2>/dev/null || true)"; [ -n "$line" ] || return 1
-  exp="${line%% *}"; tok="${line#* }"
-  [ -n "$exp" ] && [ "$exp" -gt "$((now + SKEW))" ] 2>/dev/null || return 1
-  printf '%s' "$tok"; return 0
-}
+line="$(cat "$SHELF_TOKEN" 2>/dev/null || true)"
+if [ -n "$line" ]; then
+  exp="${line%% *}"
+  tok="${line#* }"
+  if [ -n "$tok" ] && [ "$exp" -gt "$((now + SKEW))" ] 2>/dev/null; then
+    printf '%s' "$tok"
+    exit 0
+  fi
+fi
 
-# hot path: valid cached token, no network
-emit_if_fresh && exit 0
-
-# stale: re-mint under a lock so concurrent Bash calls don't stampede KMS/GitHub
-exec 9>"${CACHE}.lock" 2>/dev/null || { emit_if_fresh || true; exit 0; }
-flock -w 15 9 2>/dev/null || { emit_if_fresh || true; exit 0; }
-emit_if_fresh && exit 0   # someone minted while we waited
-
-line="$(/usr/local/bin/gh-app-token 2>/dev/null)" || { emit_if_fresh || true; exit 0; }
-case "$line" in
-  [0-9]*\ *) umask 077; printf '%s' "$line" > "$CACHE"; printf '%s' "${line#* }" ;;
-  *) emit_if_fresh || true ;;
-esac
+# Fail-open (nothing on stdout) but self-diagnosing on stderr, so a failed gh/git call carries
+# its own fix instead of surfacing as a cryptic 401/404.
+{
+  echo "gh-token-get: no valid GitHub token available."
+  echo "  shelf:       $SHELF_TOKEN ($([ -e "$SHELF_TOKEN" ] && echo stale || echo missing))"
+  echo "  vend status: $(cat /creds/status/github 2>/dev/null || echo 'absent (sidecar not vending?)')"
+  echo "  admin fix:   docker exec -it admin-sidecar aws-refresh-sso <profile>  (from a HOST terminal)"
+  echo "  details:     /workspace/.devcontainer/README.md"
+} >&2
+exit 0

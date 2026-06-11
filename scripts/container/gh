@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 #
-# gh — wrapper that ensures a fresh GitHub App token (minted via AWS KMS; see gh-token-get) is in
-# the environment, then execs the real gh. This authenticates BOTH the `gh` CLI and — via
-# `gh auth git-credential` wired as git's HTTPS credential helper — `git push`/`fetch`, for
-# everyone in this container: your terminal and agents alike. No ambient GH_TOKEN required, no
-# stored `gh` login. The gate is the ambient AWS session (AWS_PROFILE / SSO).
+# gh — wrapper that ensures a fresh GitHub App token (vended by the admin sidecar; see
+# gh-token-get) is in the environment, then execs the real gh. This authenticates BOTH the `gh`
+# CLI and — via `gh auth git-credential` wired as git's HTTPS credential helper — `git push`/
+# `fetch`, for everyone in this container: your terminal and agents alike. No ambient GH_TOKEN
+# required, no stored `gh` login. The gate is the admin's SSO session in the sidecar, which
+# keeps the shelf vended.
 #
 # The token is scoped to the App's installation (twin-digital/opus), so `gh` against *other*
 # GitHub repos in this container would use the wrong-scope token — fine for an opus container.
 set -euo pipefail
 
-# Reuse an explicit GH_TOKEN if the caller set one; otherwise mint. Minting is cheap: gh-token-get
-# serves a cache and only re-mints (KMS + GitHub API) when the token nears expiry. Empty on
-# failure -> gh is simply unauthenticated rather than wedged.
+# Reuse an explicit GH_TOKEN if the caller set one; otherwise fetch. Fetching is cheap:
+# gh-token-get reads the vended shelf token. Empty on failure -> gh is simply unauthenticated
+# rather than wedged.
 export GH_TOKEN="${GH_TOKEN:-$(/usr/local/bin/gh-token-get 2>/dev/null || true)}"
 
 # Exec the real gh (the github-cli feature installs it at /usr/bin/gh); never recurse into self.
