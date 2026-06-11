@@ -25,3 +25,61 @@ services:
       # private keys).
       - ${HOME}/.ssh/id_ed25519:/home/${USER}/.ssh/id_ed25519:ro
       - ${HOME}/.ssh/id_ed25519.pub:/home/${USER}/.ssh/id_ed25519.pub:ro
+      # The credentials shelf: the sidecar vends narrow, short-lived credentials here; the
+      # workspace (agents included) can only read them. See twin-digital/opus#164 context.
+      - creds-shelf:/creds:ro
+
+  # Admin sidecar — the human's privileged environment (SSO sessions, personal GitHub identity,
+  # lpass/ansible/terraform). Its home lives on a private volume the workspace never mounts.
+  # Enter from a HOST terminal: `docker exec -it admin-sidecar bash` (or VS Code "Attach to
+  # Running Container"). No sshd; host Docker access is the gate. The main process is
+  # vend-daemon, which runs the credential vend loops (`docker logs admin-sidecar`).
+  admin-sidecar:
+    build:
+      args:
+        USERNAME: '${USER}'
+      context: admin-sidecar
+      dockerfile: Dockerfile
+    command: ['vend-daemon']
+    container_name: admin-sidecar
+    environment:
+      # No reachable localhost callback in here (bridge network, no VS Code forwarding) — the
+      # dotfiles aws-refresh-sso helper honors this and uses the SSO device-code flow.
+      AWS_SSO_USE_DEVICE_CODE: '1'
+      # Space-separated profiles (in the admin user's ~/.aws/config) whose credentials are vended
+      # to the agents. The first doubles as [default]; agents pick others via AWS_PROFILE=<name>.
+      VEND_AWS_PROFILES: 084828575849-developer-ai-agent
+      # GitHub App token minting (non-secret config; the signing key never leaves KMS). The
+      # minting profile holds kms:Sign — agents do NOT get that permission; they only read the
+      # pre-scoped token from the shelf. Set VEND_GH_PERMS (JSON) to narrow below the App grant.
+      VEND_GH_APP_ID: '3967552'
+      # The App installation the token is minted against — installations are per-GitHub-org, so
+      # one vend loop serves exactly one org. Repos in ANOTHER org need the App installed there
+      # and a second vend loop with that org's installation id + its own token name (see
+      # "Adding repos and orgs" in README.md).
+      VEND_GH_INSTALLATION_ID: '138110942'
+      VEND_GH_KMS_KEY_ID: alias/github-app-signer
+      # Holds kms:Sign on the signing key
+      VEND_GH_AWS_PROFILE: 253490790167-developer-tool-user
+      VEND_GH_AWS_REGION: us-east-1
+      # Repos (JSON array of names) the vended token may access, narrowed from the repos the App
+      # is installed on in this org. Granting another same-org repo = add it here (and to the
+      # App installation if missing), then `docker compose up -d admin-sidecar`.
+      VEND_GH_REPOS: '["opus"]'
+      # Shelf filename: the token lands at /creds/github/<name>. Consumers read that path —
+      # gh-token-get defaults to /creds/github/opus and honors $GH_TOKEN_SHELF for others.
+      VEND_GH_TOKEN_NAME: opus
+    hostname: admin-sidecar
+    init: true
+    restart: unless-stopped
+    volumes:
+      - admin-home:/home/${USER}
+      - creds-shelf:/creds
+      - ..:/workspace:cached
+
+volumes:
+  # Written only by the admin sidecar's vend scripts; read-only in the workspace.
+  creds-shelf:
+  # The admin sidecar's $HOME (SSO cache, gh/lpass state, dotfiles). Never mounted into the
+  # workspace.
+  admin-home:

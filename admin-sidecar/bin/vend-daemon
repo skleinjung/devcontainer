@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# vend-daemon — the admin sidecar's main process: supervises the credential vend loops.
+# Each loop is self-contained (own cadence, own shelf files); if any of them dies, exit so the
+# container's restart policy brings the whole set back up.
+set -euo pipefail
+
+vend-aws-creds &
+vend-github-token &
+
+wait -n
+echo "vend-daemon: a vend loop exited; restarting container" >&2
+exit 1
