@@ -5,11 +5,14 @@ ARG USERNAME
 # run privileged setup as root
 USER root
 
-# install: gnupg2, lastpass cli (build-time; the container runs with no sudo and
-# no-new-privileges, so nothing may apt-install at runtime)
-RUN apt-get update && apt-get --no-install-recommends -yqq install \
-    gnupg2 \
-    lastpass-cli \
+# Build-time package setup (the container runs with no sudo and no-new-privileges, so nothing may
+# apt-install at runtime). Install gnupg2; PURGE sudo entirely — the workspace is untrusted, holds
+# no sudo grant, and no-new-privileges already neuters setuid, so the binary should not exist.
+# NO lastpass-cli: secret-fetching tooling belongs in the admin sidecar, not the agent container.
+RUN apt-get update \
+  && apt-get --no-install-recommends -yqq install gnupg2 \
+  && apt-get -y purge sudo \
+  && apt-get -y autoremove \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
@@ -17,11 +20,10 @@ RUN apt-get update && apt-get --no-install-recommends -yqq install \
 RUN wget https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -O /usr/local/bin/yq &&\
     chmod +x /usr/local/bin/yq
 
-# remove any existing regular users AND their residual sudo grants. The base image gives its
+# remove any existing regular users AND any residual sudo grant files. The base image gives its
 # `vscode` user passwordless sudo via /etc/sudoers.d/vscode; userdel removes the account but not
-# that file. Clear /etc/sudoers.d entirely so NO user has a sudo grant (belt-and-suspenders with
-# no-new-privileges, which already disables setuid sudo). The empty `@includedir /etc/sudoers.d`
-# in /etc/sudoers is harmless; the `sudo` group stays empty (we add no one to it).
+# that file, and `apt-get purge sudo` (above) won't remove base-image-created grant files either.
+# Clear /etc/sudoers.d so nothing lingers. (sudo is purged, so this is just tidiness.)
 RUN getent passwd \
   | awk -F: '($3 >= 1000) && ($1 != "nobody") {print $1}' \
   | xargs -r -n 1 userdel -r \
