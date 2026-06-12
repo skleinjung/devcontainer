@@ -41,6 +41,11 @@ RUN arch=$(dpkg --print-architecture) \
 COPY bin/ /usr/local/bin/
 RUN chmod 0755 /usr/local/bin/vend-*
 
+# Which GitHub App installations to vend (one loop per entry; see vend-daemon). Baked into the
+# image, NOT bind-mounted from the agent-writable /workspace, so changing vend scope is a
+# human-reviewed rebuild — the same gate as the rest of this config.
+COPY github-installations.json /etc/admin-sidecar/github-installations.json
+
 # Match the workspace container's uid/gid so files touched on the shared /workspace and /creds
 # mounts stay owned by the host user. The devcontainers base image ships a 'vscode' user at
 # uid 1000; rename it rather than fight over the uid.

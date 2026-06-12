@@ -8,6 +8,10 @@
     // .devcontainer/README.md). NOTE: setting AWS_PROFILE to an SSO profile overrides the
     // shelf [default] — don't set it (shell / .claude/settings.local.json).
     "AWS_SHARED_CREDENTIALS_FILE": "/creds/aws/credentials",
+    // This workspace's primary GitHub org — the default vended token for `gh`/git when no repo
+    // context pins an org (gh against a specific -R/cwd-remote, and git per its path, still route
+    // per-org). Must match a vended org (admin-sidecar/github-installations.json).
+    "GH_DEFAULT_ORG": "skleinjung",
     // Default region for AWS CLI/SDK calls — the vended credentials file carries credentials
     // only, no region. A region is not account-revealing.
     "AWS_REGION": "us-east-1",

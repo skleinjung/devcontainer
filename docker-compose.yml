@@ -49,26 +49,15 @@ services:
       # Space-separated profiles (in the admin user's ~/.aws/config) whose credentials are vended
       # to the agents. The first doubles as [default]; agents pick others via AWS_PROFILE=<name>.
       VEND_AWS_PROFILES: 084828575849-developer-ai-agent
-      # GitHub App token minting (non-secret config; the signing key never leaves KMS). The
-      # minting profile holds kms:Sign — agents do NOT get that permission; they only read the
-      # pre-scoped token from the shelf. Set VEND_GH_PERMS (JSON) to narrow below the App grant.
+      # GitHub App token minting — config COMMON to every installation (the signing key never
+      # leaves KMS; the minting profile holds kms:Sign, agents do not). WHICH installations to
+      # vend, and each one's repos/perms, live in admin-sidecar/github-installations.json (one
+      # vend loop per entry — see "Adding repos and orgs" in README.md).
       VEND_GH_APP_ID: '3967552'
-      # The App installation the token is minted against — installations are per-GitHub-org, so
-      # one vend loop serves exactly one org. Repos in ANOTHER org need the App installed there
-      # and a second vend loop with that org's installation id + its own token name (see
-      # "Adding repos and orgs" in README.md).
-      VEND_GH_INSTALLATION_ID: '138110942'
       VEND_GH_KMS_KEY_ID: alias/github-app-signer
       # Holds kms:Sign on the signing key
       VEND_GH_AWS_PROFILE: 253490790167-developer-tool-user
       VEND_GH_AWS_REGION: us-east-1
-      # Repos (JSON array of names) the vended token may access, narrowed from the repos the App
-      # is installed on in this org. Granting another same-org repo = add it here (and to the
-      # App installation if missing), then `docker compose up -d admin-sidecar`.
-      VEND_GH_REPOS: '["opus"]'
-      # Shelf filename: the token lands at /creds/github/<name>. Consumers read that path —
-      # gh-token-get defaults to /creds/github/opus and honors $GH_TOKEN_SHELF for others.
-      VEND_GH_TOKEN_NAME: opus
     hostname: admin-sidecar
     init: true
     restart: unless-stopped

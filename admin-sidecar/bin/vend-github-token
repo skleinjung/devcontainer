@@ -10,15 +10,20 @@
 # token from this container. CI mints its own tokens (inline JWT→KMS→exchange in publish.yaml).
 # Design context: https://github.com/twin-digital/opus/issues/164
 #
-# Config (compose `environment` — non-secret):
-#   VEND_GH_APP_ID            GitHub App id
-#   VEND_GH_INSTALLATION_ID   installation to mint against
-#   VEND_GH_KMS_KEY_ID        KMS alias/id/arn of the App signing key
-#   VEND_GH_AWS_PROFILE       profile (admin ~/.aws/config) holding kms:Sign — empty = ambient
-#   VEND_GH_AWS_REGION        region of the KMS key (default us-east-1)
-#   VEND_GH_REPOS             JSON array narrowing repos (empty = all installed repos)
-#   VEND_GH_PERMS             JSON object narrowing permissions (empty = full App grant)
-#   VEND_GH_TOKEN_NAME        shelf filename (default "opus")
+# One loop per GitHub App installation (one installation == one org). vend-daemon reads
+# github-installations.json and launches a loop per entry, setting the per-installation vars
+# below. The token lands at /creds/github/<VEND_GH_TOKEN_NAME> — by convention the org name — so
+# the shelf filenames double as the consuming side's org→token routing table.
+#
+# Config (env):
+#   VEND_GH_APP_ID            GitHub App id                                    (common, compose)
+#   VEND_GH_KMS_KEY_ID        KMS alias/id/arn of the App signing key          (common, compose)
+#   VEND_GH_AWS_PROFILE       profile (admin ~/.aws/config) holding kms:Sign   (common, compose)
+#   VEND_GH_AWS_REGION        region of the KMS key (default us-east-1)        (common, compose)
+#   VEND_GH_INSTALLATION_ID   installation to mint against                     (per-installation)
+#   VEND_GH_TOKEN_NAME        shelf filename, conventionally the org           (per-installation)
+#   VEND_GH_REPOS             JSON array narrowing repos (empty = all installed)  (per-installation)
+#   VEND_GH_PERMS             JSON object narrowing permissions (empty = full grant) (per-installation)
 #
 # Runs as a loop under vend-daemon (the sidecar's main process). Tokens last ~1h; the loop
 # re-mints when less than $VEND_REFRESH_BEFORE seconds remain. With no resolvable AWS
@@ -34,21 +39,23 @@ AWS_PROFILE_OPT=()
 AWS_REGION_OPT=(--region "${VEND_GH_AWS_REGION:-us-east-1}")
 REPOS_JSON="${VEND_GH_REPOS:-}"
 PERMS_JSON="${VEND_GH_PERMS:-}"
-TOKEN_NAME="${VEND_GH_TOKEN_NAME:-opus}"
+TOKEN_NAME="${VEND_GH_TOKEN_NAME:?set VEND_GH_TOKEN_NAME (shelf filename, conventionally the org)}"
 SHELF="${VEND_SHELF_DIR:-/creds}/github"
 REFRESH_BEFORE="${VEND_REFRESH_BEFORE:-600}" # re-mint when less than 10 min remain
 CHECK_INTERVAL="${VEND_CHECK_INTERVAL:-60}"
 
-log() { printf '%s vend-github-token: %s\n' "$(date -Is)" "$*"; }
+# Prefix with the org/token name so the five parallel loops are distinguishable in the log.
+log() { printf '%s vend-github-token[%s]: %s\n' "$(date -Is)" "$TOKEN_NAME" "$*"; }
 
 # Health stamp for consumers (shell prompts, gh-token-get breadcrumbs, future healthchecks):
 # one line, "ok ..." or "stalled ...", rewritten every cycle so mtime doubles as a heartbeat.
-STATUS_FILE="${VEND_SHELF_DIR:-/creds}/status/github"
+# Per-installation (github-<name>) so parallel loops don't clobber a shared file.
+STATUS_FILE="${VEND_SHELF_DIR:-/creds}/status/github-${TOKEN_NAME}"
 stalled_since=""
 status_write() {
   local tmp
   mkdir -p "${STATUS_FILE%/*}"
-  tmp=$(mktemp "${STATUS_FILE%/*}/.github.XXXXXX")
+  tmp=$(mktemp "${STATUS_FILE%/*}/.github-${TOKEN_NAME}.XXXXXX")
   printf '%s\n' "$1" >"$tmp"
   mv "$tmp" "$STATUS_FILE"
 }
@@ -115,7 +122,9 @@ vend() {
   json=${resp%$'\n'*}
   # Only surface .message — never the whole body (a misparsed 201 body would hold the token).
   if [ "$code" != 201 ]; then
-    log "GitHub $code: $(printf '%s' "$json" | jq -r '.message // "unknown error"' 2>/dev/null)"
+    hint=""
+    [ "$code" = 404 ] && hint=" (installation ${INSTALLATION_ID} is not a valid installation of App ${APP_ID} — check the id, or that this App is installed on org '${TOKEN_NAME}')"
+    log "GitHub $code: $(printf '%s' "$json" | jq -r '.message // "unknown error"' 2>/dev/null)${hint}"
     return 1
   fi
   token=$(printf '%s' "$json" | jq -r '.token // empty')

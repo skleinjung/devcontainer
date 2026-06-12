@@ -1,20 +1,53 @@
 #!/usr/bin/env bash
 #
-# gh — wrapper that ensures a fresh GitHub App token (vended by the admin sidecar; see
-# gh-token-get) is in the environment, then execs the real gh. This authenticates BOTH the `gh`
-# CLI and — via `gh auth git-credential` wired as git's HTTPS credential helper — `git push`/
-# `fetch`, for everyone in this container: your terminal and agents alike. No ambient GH_TOKEN
-# required, no stored `gh` login. The gate is the admin's SSO session in the sidecar, which
-# keeps the shelf vended.
+# gh — wrapper that puts the right vended GitHub token in GH_TOKEN, then execs the real gh. The
+# token the admin sidecar vends per org (see gh-token-get) authenticates the `gh` CLI; git over
+# HTTPS is handled separately by the git-credential-shelf helper. No ambient GH_TOKEN required,
+# no stored `gh` login. The gate is the admin's SSO session in the sidecar, which keeps the
+# shelf vended.
 #
-# The token is scoped to the App's installation (twin-digital/opus), so `gh` against *other*
-# GitHub repos in this container would use the wrong-scope token — fine for an opus container.
+# Since one `gh` call targets one repo/org, we resolve the org it's acting on — explicit GH_ORG,
+# else a -R/--repo flag or GH_REPO, else the cwd's origin remote — and hand gh-token-get that org
+# so cross-org `gh` works. If the org can't be determined, gh-token-get falls back to
+# GH_DEFAULT_ORG / a single vended token.
 set -euo pipefail
 
-# Reuse an explicit GH_TOKEN if the caller set one; otherwise fetch. Fetching is cheap:
-# gh-token-get reads the vended shelf token. Empty on failure -> gh is simply unauthenticated
-# rather than wedged.
-export GH_TOKEN="${GH_TOKEN:-$(/usr/local/bin/gh-token-get 2>/dev/null || true)}"
+# org of an "owner/repo" (or bare "owner") spec
+__org_of() { printf '%s' "${1%%/*}"; }
+
+__detect_org() {
+  [ -n "${GH_ORG:-}" ] && { printf '%s' "$GH_ORG"; return; }
+
+  local prev="" a
+  for a in "$@"; do
+    case "$prev" in -R | --repo) __org_of "$a"; return ;; esac
+    case "$a" in
+      --repo=*) __org_of "${a#--repo=}"; return ;;
+      -R?*) __org_of "${a#-R}"; return ;;
+    esac
+    prev="$a"
+  done
+
+  [ -n "${GH_REPO:-}" ] && { __org_of "$GH_REPO"; return; }
+
+  # cwd's origin remote, if any: https://github.com/owner/repo(.git) or git@github.com:owner/repo
+  local url rest
+  url="$(git remote get-url origin 2>/dev/null || true)"
+  case "$url" in
+    *github.com*)
+      rest="${url#*github.com}"
+      rest="${rest#[:/]}"
+      __org_of "$rest"
+      ;;
+  esac
+}
+
+# Reuse an explicit GH_TOKEN if the caller set one; otherwise fetch for the detected org. Empty
+# on failure -> gh is simply unauthenticated rather than wedged.
+if [ -z "${GH_TOKEN:-}" ]; then
+  org="$(__detect_org "$@" 2>/dev/null || true)"
+  export GH_TOKEN="$(/usr/local/bin/gh-token-get "$org" 2>/dev/null || true)"
+fi
 
 # Exec the real gh (the github-cli feature installs it at /usr/bin/gh); never recurse into self.
 # This wrapper must win PATH precedence over the real binary — it ships in /usr/local/bin (ahead of
