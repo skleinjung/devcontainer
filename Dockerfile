@@ -17,10 +17,15 @@ RUN apt-get update && apt-get --no-install-recommends -yqq install \
 RUN wget https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -O /usr/local/bin/yq &&\
     chmod +x /usr/local/bin/yq
 
-# remove any existing regular users
+# remove any existing regular users AND their residual sudo grants. The base image gives its
+# `vscode` user passwordless sudo via /etc/sudoers.d/vscode; userdel removes the account but not
+# that file. Clear /etc/sudoers.d entirely so NO user has a sudo grant (belt-and-suspenders with
+# no-new-privileges, which already disables setuid sudo). The empty `@includedir /etc/sudoers.d`
+# in /etc/sudoers is harmless; the `sudo` group stays empty (we add no one to it).
 RUN getent passwd \
   | awk -F: '($3 >= 1000) && ($1 != "nobody") {print $1}' \
-  | xargs -r -n 1 userdel -r
+  | xargs -r -n 1 userdel -r \
+  && rm -rf /etc/sudoers.d/*
 
 # setup user with same name as host (unless running as root for some reason).
 # NO sudo grant and NO docker group: the workspace is untrusted, runs with cap_drop ALL +
