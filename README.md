@@ -215,6 +215,18 @@ These `.devcontainer` files live on the agent-writable `/workspace` mount. Chang
 effect when a **human rebuilds/recreates** the containers — so *review the diff of this
 directory before any rebuild*; it is part of the security model.
 
+Two sharper edges (see the VS Code extension-host RCE note in the threat model / issue):
+
+- **`.vscode/settings.json` and `.devcontainer/devcontainer.json` are also agent-writable, and
+  some settings apply on a window *reload*, not just a rebuild** — a much lower bar, and reload
+  can be triggered from inside. Review changes to those files before *reloading the window*, not
+  only before rebuilding. (`remote.extensionKind` and extension config are the dangerous ones.)
+- **SSH agent (`SSH_AUTH_SOCK`) is forwarded and reachable by agents.** Its safety rests entirely
+  on the keys being **FIDO/hardware (touch-required)** — an agent can enumerate keys (`ssh-add
+  -L`) and attempt to use them, but each use needs a physical touch. Invariant: **never add a
+  non-touch SSH key to the agent in this container**, and be wary of unexpected touch prompts
+  (an agent can trigger them and try to make one look routine).
+
 ## Rebuilding (keep workspace + sidecar in one compose project)
 
 Both services share the `creds-shelf` volume **only when they're in the same compose project** —

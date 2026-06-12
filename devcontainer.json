@@ -36,6 +36,10 @@
         // path; neither alone is sufficient — see vscode-remote-release#4426.) Agents get only
         // the scoped /creds shelf token via git-credential-shelf.
         "remote.containers.gitCredentialHelperConfigLocation": "none",
+        // Don't copy the host's ~/.gitconfig (and .git-credentials) into the container — that
+        // default would import the host's credential.helper, user.signingkey, and any plaintext
+        // .git-credentials token. Agents use the dotfiles gitconfig + the shelf helper only.
+        "remote.containers.copyGitConfig": false,
         "extensions": ["dbaeumer.vscode-eslint", "esbenp.prettier-vscode"]
       }
     }
