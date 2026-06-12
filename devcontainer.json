@@ -67,8 +67,25 @@
   "postAttachCommand": "/usr/local/bin/post-attach",
   "postCreateCommand": "/usr/local/bin/post-create",
   "remoteEnv": {
-    // to enable, need to rename `10-start-filter-agent.sh.DISABLED` as well
-    // "SSH_AUTH_SOCK": "/tmp/ssh-filter/agent.sock"
+    // Blank VS Code's host-reaching channels so agents are confined to the scoped /creds shelf.
+    // remoteEnv applies to EVERY process VS Code spawns (terminals AND the agent's own bash
+    // subprocesses) — the shell scrub alone misses non-interactive `bash -c`, which is how agents
+    // run commands. Emptied, not removed: an empty value is as good as unset for these.
+    //   - GIT_ASKPASS / VSCODE_GIT_* : VS Code's credential askpass → your VS Code GitHub OAuth
+    //     token (broad). The git extension stays enabled (Source Control UI works via the shelf
+    //     helper); we just don't hand agents the askpass pointer.
+    //   - VSCODE_IPC_HOOK_CLI : the `code` CLI channel — running `code`/--openExternal acts on the
+    //     host side. BROWSER : openExternal's browser/command launcher. GPG_AGENT_INFO : host GPG.
+    // SSH_AUTH_SOCK is intentionally LEFT in place — it's the forwarded FIDO/YubiKey agent
+    // (hardware-touch-gated) and is used for SSH-remote git in the terminal/UI.
+    "GIT_ASKPASS": "",
+    "VSCODE_GIT_IPC_HANDLE": "",
+    "VSCODE_GIT_ASKPASS_MAIN": "",
+    "VSCODE_GIT_ASKPASS_NODE": "",
+    "VSCODE_GIT_ASKPASS_EXTRA_ARGS": "",
+    "VSCODE_IPC_HOOK_CLI": "",
+    "BROWSER": "",
+    "GPG_AGENT_INFO": ""
   },
   "remoteUser": "${localEnv:USER}",
   "service": "workspace",

@@ -13,8 +13,11 @@ set -euo pipefail
 # sources these files) could still inherit VSCODE_GIT_IPC_HANDLE and would have to speak the git
 # IPC protocol to the socket directly — a much higher bar, and the easy askpass path is gone.
 
-scrub='# Drop VS Code git askpass/IPC so they are not inherited by agents (see .devcontainer README)
-unset GIT_ASKPASS VSCODE_GIT_ASKPASS_NODE VSCODE_GIT_ASKPASS_MAIN VSCODE_GIT_ASKPASS_EXTRA_ARGS VSCODE_GIT_IPC_HANDLE 2>/dev/null || true'
+scrub='# Drop VS Code host-reaching channels so they are not inherited by agents (see .devcontainer
+# README). Secondary to devcontainer.json remoteEnv (which covers VS Code-spawned processes); this
+# covers shells started OUTSIDE VS Code, e.g. `docker exec`. SSH_AUTH_SOCK is intentionally kept.
+unset GIT_ASKPASS VSCODE_GIT_ASKPASS_NODE VSCODE_GIT_ASKPASS_MAIN VSCODE_GIT_ASKPASS_EXTRA_ARGS \
+      VSCODE_GIT_IPC_HANDLE VSCODE_IPC_HOOK_CLI BROWSER GPG_AGENT_INFO 2>/dev/null || true'
 
 f=/etc/profile.d/50-scrub-vscode-git-auth.sh
 printf '%s\n' "$scrub" | sudo tee "$f" >/dev/null

@@ -129,26 +129,40 @@ sequenceDiagram
 
 ## VS Code GitHub auth (kept away from agents)
 
-VS Code has its own GitHub credential path, separate from the shelf, and it must not become a way
-for agents to get a broader token than the shelf grants. When you sign into GitHub in VS Code
-(Accounts menu — Settings Sync, the Pull Requests extension, Copilot all prompt for it), VS Code
-caches your **personal OAuth token** and exposes a credential channel to processes in the
-container: `GIT_ASKPASS` (→ VS Code's askpass) and a `VSCODE_GIT_IPC_HANDLE` socket, both
-inherited by terminal child processes. Anything inheriting them — including an agent — can ask VS
-Code for that token, which is *you* with broad scope, well beyond the per-org `ghs_`
-app-installation tokens on the shelf.
+VS Code has its own host-reaching channels, separate from the shelf, and they must not become a
+way for agents to get more than the shelf grants. The credential one: if you sign into the GitHub
+**git** session in VS Code, it caches your **personal OAuth token** (`repo`+`workflow` scope — far
+broader than the per-org `ghs_` shelf tokens) and exposes it over `GIT_ASKPASS` → a
+`VSCODE_GIT_IPC_HANDLE` unix socket. That socket has no caller authentication, so any same-uid
+process — including an agent — can request the token from it. There are also non-credential
+host-action channels: `VSCODE_IPC_HOOK_CLI` (the `code` CLI / `--openExternal`), `BROWSER`,
+`GPG_AGENT_INFO`.
 
-This container neutralizes that path so agents stay confined to shelf tokens:
+This container blanks all of those via **`remoteEnv`** (devcontainer.json), which applies to every
+process VS Code spawns — terminals *and* the agent's non-interactive `bash -c` subprocesses, which
+a shell-only scrub misses. Plus two settings that stop VS Code wiring credential paths in the
+first place:
 
-- `git.useIntegratedAskPass: false` (devcontainer.json) — VS Code no longer injects `GIT_ASKPASS`.
-- `post-create.d/05-scrub-vscode-git-auth.sh` — unsets `GIT_ASKPASS` / `VSCODE_GIT_ASKPASS_*` /
-  `VSCODE_GIT_IPC_HANDLE` for shells (via `/etc/profile.d` + `/etc/bash.bashrc`).
+- `git.useIntegratedAskPass: false` — VS Code doesn't inject the askpass.
+- `remote.containers.gitCredentialHelperConfigLocation: none` — VS Code doesn't inject a
+  host-credential-proxy helper (the separate path that would bridge your *host's* stored git creds
+  in; see vscode-remote-release#4426 — neither setting alone is sufficient).
+- `post-create.d/05-scrub-vscode-git-auth.sh` — a secondary shell scrub (`/etc/profile.d` +
+  `/etc/bash.bashrc`) covering shells started *outside* VS Code (e.g. `docker exec`).
 
-`git`/`gh` are unaffected — they authenticate via `git-credential-shelf`, independent of askpass.
-Residual: a process launched *directly* by the VS Code server (not via a scrubbed shell) could
-still see `VSCODE_GIT_IPC_HANDLE` and would have to speak the git IPC protocol to the socket
-directly — a much higher bar, with the easy askpass path removed. Belt-and-suspenders: prefer not
-to sign into GitHub in VS Code for this window (use a Microsoft account for Settings Sync).
+The git extension stays **enabled** — its Source Control UI authenticates github.com via
+`git-credential-shelf` (the scoped shelf token), not your OAuth, so it works normally and signing
+out of GitHub doesn't affect it. `SSH_AUTH_SOCK` is intentionally left in place (forwarded
+FIDO/YubiKey agent, hardware-touch-gated, used for SSH-remote git).
+
+**The residual, stated plainly:** the git extension being enabled means the askpass IPC socket
+still exists at `/tmp/vscode-git-*.sock` — discoverable by `ls` and connectable by any same-uid
+process, regardless of the blanked env var. So the real guarantee is upstream: **don't authorize
+the GitHub *git* session** in VS Code. With no session, the socket has nothing to vend (it
+prompts). Settings Sync and Copilot do **not** create that session, and their tokens are not
+agent-reachable (client-side storage + `ptrace_scope`); only an explicit *git* sign-in /
+"Publish to GitHub" does. (To remove the socket entirely you would disable the git extension with
+`git.enabled: false` — we keep it for the UI and accept this residual.)
 
 ## Troubleshooting
 
