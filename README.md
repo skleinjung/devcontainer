@@ -127,6 +127,10 @@ sequenceDiagram
   `/workspace`. Remember the source you apply there is agent-writable — review diffs before
   `terraform apply` etc.
 
+> For the full threat landscape — trust tiers, every VS Code secret↔process channel, what's left
+> enabled and why, what's structurally unfixable, and what's out of scope — see
+> [SECURITY.md](./SECURITY.md). The sections below are the GitHub-auth slice of it.
+
 ## VS Code GitHub auth (kept away from agents)
 
 VS Code has its own host-reaching channels, separate from the shelf, and they must not become a
