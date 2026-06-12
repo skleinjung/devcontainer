@@ -30,6 +30,12 @@
         // the scoped shelf tokens agents are meant to have. git/gh are unaffected (they use the
         // git-credential-shelf helper). A profile.d scrub (post-create) covers the residual env.
         "git.useIntegratedAskPass": false,
+        // Don't inject VS Code's host-credential-proxy helper into the container's gitconfig —
+        // a separate forwarding path that would bridge the HOST's stored git credentials into an
+        // agent's reach. (Complements useIntegratedAskPass above, which covers the askpass/OAuth
+        // path; neither alone is sufficient — see vscode-remote-release#4426.) Agents get only
+        // the scoped /creds shelf token via git-credential-shelf.
+        "remote.containers.gitCredentialHelperConfigLocation": "none",
         "extensions": ["dbaeumer.vscode-eslint", "esbenp.prettier-vscode"]
       }
     }
