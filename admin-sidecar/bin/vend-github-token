@@ -44,7 +44,8 @@ SHELF="${VEND_SHELF_DIR:-/creds}/github"
 REFRESH_BEFORE="${VEND_REFRESH_BEFORE:-600}" # re-mint when less than 10 min remain
 CHECK_INTERVAL="${VEND_CHECK_INTERVAL:-60}"
 
-log() { printf '%s vend-github-token: %s\n' "$(date -Is)" "$*"; }
+# Prefix with the org/token name so the five parallel loops are distinguishable in the log.
+log() { printf '%s vend-github-token[%s]: %s\n' "$(date -Is)" "$TOKEN_NAME" "$*"; }
 
 # Health stamp for consumers (shell prompts, gh-token-get breadcrumbs, future healthchecks):
 # one line, "ok ..." or "stalled ...", rewritten every cycle so mtime doubles as a heartbeat.
@@ -121,7 +122,9 @@ vend() {
   json=${resp%$'\n'*}
   # Only surface .message — never the whole body (a misparsed 201 body would hold the token).
   if [ "$code" != 201 ]; then
-    log "GitHub $code: $(printf '%s' "$json" | jq -r '.message // "unknown error"' 2>/dev/null)"
+    hint=""
+    [ "$code" = 404 ] && hint=" (installation ${INSTALLATION_ID} is not a valid installation of App ${APP_ID} — check the id, or that this App is installed on org '${TOKEN_NAME}')"
+    log "GitHub $code: $(printf '%s' "$json" | jq -r '.message // "unknown error"' 2>/dev/null)${hint}"
     return 1
   fi
   token=$(printf '%s' "$json" | jq -r '.token // empty')
