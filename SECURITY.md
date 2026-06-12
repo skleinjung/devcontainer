@@ -81,8 +81,9 @@ current; ⏳ #N = target state once that issue lands — don't regress *toward* 
 | Docker socket | **never** mounted (`/var/run/docker.sock`) | A writable socket is root-equivalent on the host — voids every boundary |
 | `privileged` | **never** `true` | Privileged ⇒ trivial host escape |
 | `cap_add: SYS_PTRACE` / `ptrace_scope` | **never add** SYS_PTRACE; keep `ptrace_scope ≥ 1` | Protects in-memory Settings-Sync/Copilot tokens from heap scraping (✅) |
-| `network_mode: host`, `ipc: host` | ⏳ #4: drop to bridge | Host net/ipc gives the agent the host's network/IPC namespace |
-| `cap_drop: [ALL]` + `no-new-privileges` + no sudo | ⏳ #4: add | Reduce in-container root power / credential-tooling tampering |
+| `network_mode` / `ipc: host` | **never** set (use bridge) | Host net/ipc would give the agent the host's network/IPC namespace (✅) |
+| `cap_drop: [ALL]` + `no-new-privileges:true` + no sudo grant | keep all three | In-container root power, credential-tooling tampering, setuid escalation — `no-new-privileges` also disables sudo (✅) |
+| `entrypoint: workspace-entrypoint` | keep | Reaps `vscode-{ipc,git}-*.sock`; needs `overrideCommand:false` (devcontainer.json) or VS Code replaces it (✅) |
 
 **git / credential config**
 
@@ -185,22 +186,28 @@ container. Each is a channel an untrusted workspace process could ride. Enumerat
 
 | Channel | What it exposes | Control | Status |
 |---|---|---|---|
-| **git askpass / OAuth** (`GIT_ASKPASS`, `VSCODE_GIT_IPC_HANDLE` socket) | The human's VS Code GitHub **OAuth token** (`repo`+`workflow` — owner-scoped) once the *git* session is authorized | `git.useIntegratedAskPass:false` + `remoteEnv` blanks the vars; **but the socket persists** (see residual) | ✅ + ♾️ |
+| **git askpass / OAuth** (`GIT_ASKPASS`, `VSCODE_GIT_IPC_HANDLE` socket) | The human's VS Code GitHub **OAuth token** (`repo`+`workflow` — owner-scoped) once the *git* session is authorized | `git.useIntegratedAskPass:false` + `remoteEnv` blanks the vars; the socket (`vscode-git-*.sock`) is **reaped** by the entrypoint | ✅ + ♾️ |
 | **host-credential-proxy** (injected git `credential.helper`) | The host's *stored* git credentials | `remote.containers.gitCredentialHelperConfigLocation:none` | ✅ |
 | **host gitconfig copy** | Host `~/.gitconfig` + `.git-credentials` (plaintext token, `credential.helper`, `signingkey`) | `remote.containers.copyGitConfig:false` | ✅ |
-| **`code` CLI / host actions** (`VSCODE_IPC_HOOK_CLI`) | Run `code`/`--openExternal` against the host | `remoteEnv` blanks it | ✅ |
+| **`code` CLI / IPC** (`VSCODE_IPC_HOOK_CLI`, `vscode-ipc-*.sock`) | `code` against the host — incl. `--install-extension` (a bootstrap into the extension host / RCE) and `--openExternal` | `remoteEnv` blanks the var; the socket (`vscode-ipc-*.sock`) is **reaped** by the entrypoint | ✅ + ♾️ |
 | **`BROWSER`** | openExternal launches host browser/handler (phishing, OAuth redirect abuse) | `remoteEnv` blanks it | ✅ |
 | **`GPG_AGENT_INFO`** | Host GPG agent (sign, passphrase-phish via pinentry) | `remoteEnv` blanks it (we don't use GPG) | ✅ |
 | **SSH agent** (`SSH_AUTH_SOCK` socket) | Host SSH keys — enumerate (`ssh-add -L`), authenticate to other hosts, SOCKS-pivot | **Left enabled**; safe only because keys are **FIDO/touch-gated** | ♾️ (see below) |
 | **Settings Sync / Copilot tokens** | The human's GitHub token for those features | **Not reachable** — stored client-side; the container copy is in-memory in the ext-host process, protected by `ptrace_scope=1` | ✅ (verified empirically) |
 
-**The git-askpass residual (♾️):** the git extension stays enabled (for the Source Control UI,
-which authenticates via the scoped shelf token, not OAuth). That means the askpass IPC socket
-still exists at `/tmp/vscode-git-*.sock` — discoverable by `ls` and connectable by any same-uid
-process, *regardless of the blanked env var* (the socket has no caller authentication). So the
-blanking is defense-in-depth, not a guarantee. **The real guarantee is upstream: do not authorize
-the GitHub *git* session in VS Code.** With no session the socket has nothing to vend. Settings
-Sync and Copilot do **not** create that session; only an explicit git sign-in / "Publish to
+**The IPC-socket residual (♾️) and the reaper:** the git and CLI extensions stay enabled (for the
+Source Control UI and editor integration), so VS Code keeps recreating `vscode-git-*.sock`
+(askpass/OAuth + git-editor) and `vscode-ipc-*.sock` (the `code` CLI). These sockets have **no
+caller authentication** — any same-uid process can connect, *regardless of the blanked env var*.
+Two layers handle them: `remoteEnv`/the shell scrub hide the *pointers*, and the container
+**entrypoint reaps the sockets themselves** every 2s (`scripts/container/workspace-entrypoint`,
+wired via the compose `entrypoint`; it deliberately spares `vscode-remote-containers-*.sock` and
+`vscode-ssh-auth-*.sock`). The reaper is **defense-in-depth, not a wall** — VS Code recreates the
+sockets and there's a brief window before the next sweep; it's a race, as the source research
+notes. So the real guarantees remain upstream: **do not authorize the GitHub *git* session in VS
+Code** (with no session the git socket has nothing to vend), and the extension-host RCE class
+(#5) is unfixed regardless (an agent can poison an on-disk extension, not just `--install-extension`).
+Settings Sync and Copilot do **not** create the git session; only an explicit git sign-in / "Publish to
 GitHub" does. Empirically demonstrated: with the git session authorized, an agent silently pulled
 a live `repo`+`workflow` token from the socket; with it not authorized, the socket returns nothing.
 
@@ -210,8 +217,9 @@ shell's exec-time `/proc/self/environ` has none of them. But VS Code **re-inject
 `VSCODE_GIT_IPC_HANDLE` / `VSCODE_IPC_HOOK_CLI` / `BROWSER` into **integrated terminals** via its
 terminal `EnvironmentVariableCollection`, *overriding* `remoteEnv` there (`GIT_ASKPASS` is the
 exception — `useIntegratedAskPass:false` stops its re-injection). So `remoteEnv` is **not**
-sufficient alone for interactive terminals; the `post-create.d/05-scrub-vscode-git-auth.sh` shell
-scrub is what cleans them, and it matters because anything launched *from* a human's integrated
+sufficient alone for interactive terminals; the build-time shell scrub
+(`/etc/profile.d/50-scrub-vscode-git-auth.sh` + a `/etc/bash.bashrc` include, baked into the
+image) is what cleans them, and it matters because anything launched *from* a human's integrated
 terminal (including an agent started by typing `claude`) inherits that terminal's env. Both layers
 are load-bearing — `remoteEnv` for spawned/agent processes, the scrub for interactive terminals.
 *(Verify after any rebuild: in a fresh terminal, `tr '\0' '\n' < /proc/$$/environ | grep -E
@@ -246,20 +254,22 @@ Related discipline (✅ Current): `.vscode/settings.json` and `.devcontainer/` a
 and some settings apply on **window reload**, not just rebuild — review changes to them before
 *reloading*, not only before rebuilding.
 
-## Container isolation (⏳ Future — #4)
+## Container isolation (✅ #4)
 
-The workspace container is currently **less** isolated than it should be. **Not yet fixed**,
-tracked in [#4](https://github.com/skleinjung/.devcontainer/issues/4):
+The workspace container is isolated at the OS level (done in
+[#4](https://github.com/skleinjung/.devcontainer/issues/4)):
 
-- ⏳ `network_mode: host` + `ipc: host` → drop to bridge networking (also closes the SSH-agent
-  SOCKS/LAN-pivot half of the forwarded-agent attack).
-- ⏳ Passwordless `sudo` + full capabilities → `cap_drop: [ALL]` + `security_opt:
-  no-new-privileges:true` (which itself disables setuid sudo) + remove the sudoers grant. Requires
-  moving the `sudo`-based post-create system config into the Dockerfile (build-time root).
+- **Bridge networking** (no `network_mode`/`ipc: host`) — the agent does not share the host's
+  network or IPC namespace; this also closes the SSH-agent SOCKS/LAN-pivot half of the
+  forwarded-agent attack. `host.docker.internal` still reaches host services; VS Code forwards
+  container ports over the existing tunnel.
+- **`cap_drop: [ALL]` + `security_opt: no-new-privileges:true` + no sudo grant** — no Linux
+  capabilities, no setuid privilege escalation (which also makes sudo non-functional, so it's
+  simply not granted). An agent is an ordinary unprivileged user that cannot tamper with the
+  root-owned credential tooling (`/usr/local/bin/git-credential-shelf` etc.).
 
-Until #4 lands, an agent has root-in-container with full caps on the host network namespace —
-able to tamper with the trusted credential tooling (`/usr/local/bin/git-credential-shelf` etc.)
-and reach host-network services.
+Because the container can no longer `sudo` at runtime, all privileged setup (system gitconfig,
+the interactive-terminal scrub, pandoc) is baked into the **Dockerfile** at build time.
 
 ## Things we could do but deliberately aren't
 
@@ -268,8 +278,10 @@ and reach host-network services.
 - **Clear / disable `SSH_AUTH_SOCK`** — kept. It's the forwarded FIDO agent, hardware-touch-gated
   (silent key use fails), and the human uses it for SSH-remote git. Invariant: **never add a
   non-touch SSH key**; be wary of unexpected touch prompts (an agent can trigger them).
-- **`git.enabled:false`** (remove the askpass socket entirely) — kept enabled for the Source
-  Control UI; we accept the socket residual and rely on "don't authorize the git OAuth session."
+- **`git.enabled:false`** (never create the git socket) — kept enabled for the Source Control UI;
+  instead the entrypoint *reaps* the socket (and the `code`-CLI socket) and we rely on "don't
+  authorize the git OAuth session." Reaping is a race; `git.enabled:false` would be airtight for
+  the git socket but costs the SCM UI.
 - **Make `~/.vscode-server/extensions` read-only / integrity-checked** — under consideration for
   #5, not done.
 - **Network egress allowlisting** — see Out of scope.
@@ -302,7 +314,8 @@ This doc covers the **plumbing** that confines untrusted workspace code. It does
   token from the askpass socket → so **don't authorize it**.
 - ♾️ **Can**, by writing files + a window reload, achieve **RCE on the desktop** via the extension
   host → mitigated only by future workflow changes (⏳ #5).
-- ⏳ Until #4: has root-in-container with full caps on the host network namespace.
+- ✅ **Cannot** escalate within the container (no caps, no-new-privileges, no sudo) or reach the
+  host's network/IPC namespace (bridge networking) — #4.
 
 ## Sources & references
 

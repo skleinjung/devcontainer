@@ -151,8 +151,8 @@ first place:
 - `remote.containers.gitCredentialHelperConfigLocation: none` — VS Code doesn't inject a
   host-credential-proxy helper (the separate path that would bridge your *host's* stored git creds
   in; see vscode-remote-release#4426 — neither setting alone is sufficient).
-- `post-create.d/05-scrub-vscode-git-auth.sh` — a shell scrub (`/etc/profile.d` +
-  `/etc/bash.bashrc`). **Not** merely secondary: VS Code re-injects `VSCODE_GIT_IPC_HANDLE` /
+- `/etc/profile.d/50-scrub-vscode-git-auth.sh` (+ a `/etc/bash.bashrc` include) — a shell scrub
+  baked into the image at build time. **Not** merely secondary: VS Code re-injects `VSCODE_GIT_IPC_HANDLE` /
   `VSCODE_IPC_HOOK_CLI` / `BROWSER` into *integrated terminals* on top of `remoteEnv`, so this is
   the only thing that cleans them there (verified — see SECURITY.md "two-layer env
   neutralization"). `remoteEnv` covers the agent's own non-interactive shells; the scrub covers
@@ -163,14 +163,16 @@ The git extension stays **enabled** — its Source Control UI authenticates gith
 out of GitHub doesn't affect it. `SSH_AUTH_SOCK` is intentionally left in place (forwarded
 FIDO/YubiKey agent, hardware-touch-gated, used for SSH-remote git).
 
-**The residual, stated plainly:** the git extension being enabled means the askpass IPC socket
-still exists at `/tmp/vscode-git-*.sock` — discoverable by `ls` and connectable by any same-uid
-process, regardless of the blanked env var. So the real guarantee is upstream: **don't authorize
-the GitHub *git* session** in VS Code. With no session, the socket has nothing to vend (it
-prompts). Settings Sync and Copilot do **not** create that session, and their tokens are not
-agent-reachable (client-side storage + `ptrace_scope`); only an explicit *git* sign-in /
-"Publish to GitHub" does. (To remove the socket entirely you would disable the git extension with
-`git.enabled: false` — we keep it for the UI and accept this residual.)
+**The residual and the reaper:** the git/CLI extensions being enabled means VS Code keeps
+recreating `/tmp/vscode-git-*.sock` (askpass/git-editor) and `/tmp/vscode-ipc-*.sock` (the `code`
+CLI) — discoverable by `ls` and connectable by any same-uid process, regardless of the blanked env
+var. The container **entrypoint reaps both every 2s** (`scripts/container/workspace-entrypoint`,
+wired via the compose `entrypoint`; it spares `vscode-remote-containers-*.sock` and
+`vscode-ssh-auth-*.sock`). That's defense-in-depth, not a wall — it's a race (recreate vs. sweep).
+So the real guarantee stays upstream: **don't authorize the GitHub *git* session** in VS Code.
+With no session, the git socket has nothing to vend. Settings Sync and Copilot do **not** create
+that session, and their tokens aren't agent-reachable (client-side storage + `ptrace_scope`); only
+an explicit *git* sign-in / "Publish to GitHub" does.
 
 ## Troubleshooting
 

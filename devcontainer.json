@@ -41,6 +41,9 @@
         // default would import the host's credential.helper, user.signingkey, and any plaintext
         // .git-credentials token. Agents use the dotfiles gitconfig + the shelf helper only.
         "remote.containers.copyGitConfig": false,
+        // Don't register VS Code as the terminal Git editor — its git-editor IPC socket is reaped
+        // (see entrypoint), and git uses nano (core.editor, baked in the Dockerfile) instead.
+        "git.terminalGitEditor": false,
         "extensions": ["dbaeumer.vscode-eslint", "esbenp.prettier-vscode"]
       }
     }
@@ -68,7 +71,9 @@
   "init": true,
   "initializeCommand": ".devcontainer/scripts/host/initialize.sh",
   "name": "Workspace",
-  "overrideCommand": true,
+  // false so VS Code keeps the compose entrypoint/command (the socket reaper) instead of replacing
+  // it with its own keep-alive. The entrypoint runs the reaper and `sleep infinity` itself.
+  "overrideCommand": false,
   "postAttachCommand": "/usr/local/bin/post-attach",
   "postCreateCommand": "/usr/local/bin/post-create",
   "remoteEnv": {
