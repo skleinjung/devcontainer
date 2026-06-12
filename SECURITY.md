@@ -81,8 +81,8 @@ current; ⏳ #N = target state once that issue lands — don't regress *toward* 
 | Docker socket | **never** mounted (`/var/run/docker.sock`) | A writable socket is root-equivalent on the host — voids every boundary |
 | `privileged` | **never** `true` | Privileged ⇒ trivial host escape |
 | `cap_add: SYS_PTRACE` / `ptrace_scope` | **never add** SYS_PTRACE; keep `ptrace_scope ≥ 1` | Protects in-memory Settings-Sync/Copilot tokens from heap scraping (✅) |
-| `network_mode: host`, `ipc: host` | ⏳ #4: drop to bridge | Host net/ipc gives the agent the host's network/IPC namespace |
-| `cap_drop: [ALL]` + `no-new-privileges` + no sudo | ⏳ #4: add | Reduce in-container root power / credential-tooling tampering |
+| `network_mode` / `ipc: host` | **never** set (use bridge) | Host net/ipc would give the agent the host's network/IPC namespace (✅) |
+| `cap_drop: [ALL]` + `no-new-privileges:true` + no sudo grant | keep all three | In-container root power, credential-tooling tampering, setuid escalation — `no-new-privileges` also disables sudo (✅) |
 
 **git / credential config**
 
@@ -210,8 +210,9 @@ shell's exec-time `/proc/self/environ` has none of them. But VS Code **re-inject
 `VSCODE_GIT_IPC_HANDLE` / `VSCODE_IPC_HOOK_CLI` / `BROWSER` into **integrated terminals** via its
 terminal `EnvironmentVariableCollection`, *overriding* `remoteEnv` there (`GIT_ASKPASS` is the
 exception — `useIntegratedAskPass:false` stops its re-injection). So `remoteEnv` is **not**
-sufficient alone for interactive terminals; the `post-create.d/05-scrub-vscode-git-auth.sh` shell
-scrub is what cleans them, and it matters because anything launched *from* a human's integrated
+sufficient alone for interactive terminals; the build-time shell scrub
+(`/etc/profile.d/50-scrub-vscode-git-auth.sh` + a `/etc/bash.bashrc` include, baked into the
+image) is what cleans them, and it matters because anything launched *from* a human's integrated
 terminal (including an agent started by typing `claude`) inherits that terminal's env. Both layers
 are load-bearing — `remoteEnv` for spawned/agent processes, the scrub for interactive terminals.
 *(Verify after any rebuild: in a fresh terminal, `tr '\0' '\n' < /proc/$$/environ | grep -E
@@ -246,20 +247,22 @@ Related discipline (✅ Current): `.vscode/settings.json` and `.devcontainer/` a
 and some settings apply on **window reload**, not just rebuild — review changes to them before
 *reloading*, not only before rebuilding.
 
-## Container isolation (⏳ Future — #4)
+## Container isolation (✅ #4)
 
-The workspace container is currently **less** isolated than it should be. **Not yet fixed**,
-tracked in [#4](https://github.com/skleinjung/.devcontainer/issues/4):
+The workspace container is isolated at the OS level (done in
+[#4](https://github.com/skleinjung/.devcontainer/issues/4)):
 
-- ⏳ `network_mode: host` + `ipc: host` → drop to bridge networking (also closes the SSH-agent
-  SOCKS/LAN-pivot half of the forwarded-agent attack).
-- ⏳ Passwordless `sudo` + full capabilities → `cap_drop: [ALL]` + `security_opt:
-  no-new-privileges:true` (which itself disables setuid sudo) + remove the sudoers grant. Requires
-  moving the `sudo`-based post-create system config into the Dockerfile (build-time root).
+- **Bridge networking** (no `network_mode`/`ipc: host`) — the agent does not share the host's
+  network or IPC namespace; this also closes the SSH-agent SOCKS/LAN-pivot half of the
+  forwarded-agent attack. `host.docker.internal` still reaches host services; VS Code forwards
+  container ports over the existing tunnel.
+- **`cap_drop: [ALL]` + `security_opt: no-new-privileges:true` + no sudo grant** — no Linux
+  capabilities, no setuid privilege escalation (which also makes sudo non-functional, so it's
+  simply not granted). An agent is an ordinary unprivileged user that cannot tamper with the
+  root-owned credential tooling (`/usr/local/bin/git-credential-shelf` etc.).
 
-Until #4 lands, an agent has root-in-container with full caps on the host network namespace —
-able to tamper with the trusted credential tooling (`/usr/local/bin/git-credential-shelf` etc.)
-and reach host-network services.
+Because the container can no longer `sudo` at runtime, all privileged setup (system gitconfig,
+the interactive-terminal scrub, pandoc) is baked into the **Dockerfile** at build time.
 
 ## Things we could do but deliberately aren't
 
@@ -302,7 +305,8 @@ This doc covers the **plumbing** that confines untrusted workspace code. It does
   token from the askpass socket → so **don't authorize it**.
 - ♾️ **Can**, by writing files + a window reload, achieve **RCE on the desktop** via the extension
   host → mitigated only by future workflow changes (⏳ #5).
-- ⏳ Until #4: has root-in-container with full caps on the host network namespace.
+- ✅ **Cannot** escalate within the container (no caps, no-new-privileges, no sudo) or reach the
+  host's network/IPC namespace (bridge networking) — #4.
 
 ## Sources & references
 

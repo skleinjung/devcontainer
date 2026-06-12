@@ -10,12 +10,23 @@ services:
         limits:
           cpus: '6'
           memory: 6g
+    # Bridge networking (NOT network_mode/ipc: host) so the agent doesn't share the host's network
+    # and IPC namespaces. VS Code forwards container ports over the existing SSH tunnel
+    # (devcontainer.json forwardPorts); the sidecar communicates via the /creds volume, not the
+    # network. host.docker.internal still reaches host services; workspace:127.0.0.1 keeps the
+    # container hostname resolvable (replaces the old sudo-based 00-configure-hosts step).
     extra_hosts:
       - 'host.docker.internal:host-gateway'
+      - 'workspace:127.0.0.1'
     hostname: workspace
-    ipc: host
-    network_mode: host
     shm_size: 1g
+    # Untrusted-code hardening: drop all Linux capabilities and block setuid privilege escalation
+    # (which also disables sudo — there is no sudoers grant). Add back a specific cap only if a
+    # tool genuinely needs it.
+    cap_drop:
+      - ALL
+    security_opt:
+      - 'no-new-privileges:true'
     volumes:
       - ..:/workspace:cached
       - ${HOME}/.bash_history:/home/${USER}/.bash_history:cached
