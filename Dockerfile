@@ -49,8 +49,7 @@ RUN chown -R "${USERNAME}:${USERNAME}" /home/${USERNAME}
 # runtime under no-new-privileges). All static, so it belongs in the image anyway.
 
 # System gitconfig: github.com HTTPS auth routes to git-credential-shelf (the vended shelf token),
-# host-scoped and useHttpPath so the helper can route per-org. (Stale per-repo helper cleanup in
-# any /workspace checkout still runs at runtime — see post-create.d/20-configure-git-credentials.)
+# host-scoped and useHttpPath so the helper can route per-org.
 RUN git config --system --add 'credential.https://github.com.helper' '' \
   && git config --system --add 'credential.https://github.com.helper' '!/usr/local/bin/git-credential-shelf' \
   && git config --system 'credential.https://github.com.useHttpPath' true
