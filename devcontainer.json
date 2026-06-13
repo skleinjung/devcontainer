@@ -3,46 +3,38 @@
     "NODE_OPTIONS": "--experimental-transform-types --no-warnings=ExperimentalWarning",
     "PW_CHROMIUM_SANDBOX": "0",
     "VSCODE_AGENT_FOLDER": "/vscode",
-    // Agent credentials (AWS + GitHub) come from the read-only /creds shelf vended by the
-    // admin sidecar — this container can neither mint nor widen them (see
-    // .devcontainer/README.md). NOTE: setting AWS_PROFILE to an SSO profile overrides the
-    // shelf [default] — don't set it (shell / .claude/settings.local.json).
-    "AWS_SHARED_CREDENTIALS_FILE": "/creds/aws/credentials",
-    // This workspace's primary GitHub org — the default vended token for `gh`/git when no repo
-    // context pins an org (gh against a specific -R/cwd-remote, and git per its path, still route
-    // per-org). Must match a vended org (admin-sidecar/github-installations.json).
+    // base sets AWS_SHARED_CREDENTIALS_FILE=/creds/aws/credentials, so the workspace reads
+    // the vended AWS creds with no config here. (Don't set AWS_PROFILE to an SSO profile —
+    // it would override the shelf [default].)
+    //
+    // This workspace's primary GitHub org — base's devcred/git/gh shims use it when no repo
+    // context pins one. Must match a vended org (github-creds/installations.json).
     "GH_DEFAULT_ORG": "skleinjung",
-    // Default region for AWS CLI/SDK calls — the vended credentials file carries credentials
-    // only, no region. A region is not account-revealing.
+    // Default region for AWS CLI/SDK calls — the vended credentials file carries no region.
     "AWS_REGION": "us-east-1",
-    // Make Claude Code fetch the plugin marketplace over HTTPS instead of git@github.com (ssh).
-    // The forwarded FIDO/yubikey agent is the only github ssh credential, so an ssh fetch prompts a
-    // hardware touch on every startup; HTTPS rides the App-token auth above instead. (The startup
-    // ssh connectivity probe is handled separately by the ~/.claude/bin/ssh shim.)
+    // base scrubs SSH_AUTH_SOCK from interactive shells by default; opt out — we use the
+    // forwarded FIDO/YubiKey agent (hardware-touch-gated) for SSH-remote git.
+    "SCRUB_SSH_AUTH_SOCK_ENABLED": "false",
+    // Make Claude Code fetch the plugin marketplace over HTTPS instead of git@github.com
+    // (ssh), so it rides the App-token auth instead of prompting a hardware touch on startup.
     "CLAUDE_CODE_PLUGIN_PREFER_HTTPS": "1"
-    
   },
   "customizations": {
     "vscode": {
       "settings": {
         "dev.containers.dockerCredentialHelper": false,
-        // Don't inject GIT_ASKPASS: it forwards credential prompts to VS Code, which can hand a
-        // process the human's VS Code GitHub login (a broad personal OAuth token) — far more than
-        // the scoped shelf tokens agents are meant to have. git/gh are unaffected (they use the
-        // git-credential-shelf helper). A profile.d scrub (post-create) covers the residual env.
+        // Don't inject GIT_ASKPASS: it forwards credential prompts to VS Code, which can hand
+        // a process the human's broad VS Code GitHub OAuth token — far more than the scoped
+        // shelf tokens. git/gh are unaffected (they use base's devcred credential helper).
         "git.useIntegratedAskPass": false,
-        // Don't inject VS Code's host-credential-proxy helper into the container's gitconfig —
-        // a separate forwarding path that would bridge the HOST's stored git credentials into an
-        // agent's reach. (Complements useIntegratedAskPass above, which covers the askpass/OAuth
-        // path; neither alone is sufficient — see vscode-remote-release#4426.) Agents get only
-        // the scoped /creds shelf token via git-credential-shelf.
+        // Don't inject VS Code's host-credential-proxy helper into the container's gitconfig
+        // (a separate path that bridges the HOST's stored git credentials in). Neither this
+        // nor useIntegratedAskPass alone is sufficient — see vscode-remote-release#4426.
         "remote.containers.gitCredentialHelperConfigLocation": "none",
-        // Don't copy the host's ~/.gitconfig (and .git-credentials) into the container — that
-        // default would import the host's credential.helper, user.signingkey, and any plaintext
-        // .git-credentials token. Agents use the dotfiles gitconfig + the shelf helper only.
+        // Don't copy the host's ~/.gitconfig / .git-credentials into the container.
         "remote.containers.copyGitConfig": false,
-        // Don't register VS Code as the terminal Git editor — its git-editor IPC socket is reaped
-        // (see entrypoint), and git uses nano (core.editor, baked in the Dockerfile) instead.
+        // Don't register VS Code as the terminal Git editor — its git-editor IPC socket is
+        // reaped (entrypoint), and git uses nano (core.editor, set by base) instead.
         "git.terminalGitEditor": false,
         "extensions": ["dbaeumer.vscode-eslint", "esbenp.prettier-vscode"]
       }
@@ -51,14 +43,8 @@
   "dockerComposeFile": ["docker-compose.yml"],
   "features": {
     "ghcr.io/devcontainers/features/aws-cli:1": {},
-    // Docker is intentionally absent: the host socket (docker-outside-of-docker) gives agents
-    // root-equivalent reach onto the host, and docker-in-docker requires a privileged container.
-    // Replacement is an external agent-domain daemon — https://github.com/twin-digital/opus/issues/164.
-    // Only uncomment one of the following if you need docker before that lands:
-    // "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
-    //   "moby": false
-    // },
-    // "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    // Docker is intentionally absent: the host socket gives agents root-equivalent reach onto
+    // the host. Replacement is an external agent-domain daemon (twin-digital/opus#164).
     "ghcr.io/devcontainers/features/github-cli:1": {},
     "ghcr.io/devcontainers/features/node:1": {
       "version": "24"
@@ -71,23 +57,19 @@
   "init": true,
   "initializeCommand": ".devcontainer/scripts/host/initialize.sh",
   "name": "Workspace",
-  // false so VS Code keeps the compose entrypoint/command (the socket reaper) instead of replacing
-  // it with its own keep-alive. The entrypoint runs the reaper and `sleep infinity` itself.
+  // false so VS Code keeps the compose entrypoint (base's reap-vscode-sockets) instead of
+  // replacing it with its own keep-alive.
   "overrideCommand": false,
   "postAttachCommand": "/usr/local/bin/post-attach",
   "postCreateCommand": "/usr/local/bin/post-create",
   "remoteEnv": {
-    // Blank VS Code's host-reaching channels so agents are confined to the scoped /creds shelf.
-    // remoteEnv applies to EVERY process VS Code spawns (terminals AND the agent's own bash
-    // subprocesses) — the shell scrub alone misses non-interactive `bash -c`, which is how agents
-    // run commands. Emptied, not removed: an empty value is as good as unset for these.
-    //   - GIT_ASKPASS / VSCODE_GIT_* : VS Code's credential askpass → your VS Code GitHub OAuth
-    //     token (broad). The git extension stays enabled (Source Control UI works via the shelf
-    //     helper); we just don't hand agents the askpass pointer.
-    //   - VSCODE_IPC_HOOK_CLI : the `code` CLI channel — running `code`/--openExternal acts on the
-    //     host side. BROWSER : openExternal's browser/command launcher. GPG_AGENT_INFO : host GPG.
-    // SSH_AUTH_SOCK is intentionally LEFT in place — it's the forwarded FIDO/YubiKey agent
-    // (hardware-touch-gated) and is used for SSH-remote git in the terminal/UI.
+    // Blank VS Code's host-reaching channels for every process VS Code spawns (terminals AND
+    // an agent's non-interactive `bash -c`). base's shell scrub additionally covers integrated
+    // terminals, where VS Code re-injects some of these on top of remoteEnv.
+    //   GIT_ASKPASS / VSCODE_GIT_* : VS Code's askpass → the human's broad GitHub OAuth token.
+    //   VSCODE_IPC_HOOK_CLI : the `code` CLI channel. BROWSER / GPG_AGENT_INFO : host launch/GPG.
+    // SSH_AUTH_SOCK is intentionally NOT blanked here (the forwarded FIDO agent); base's
+    // default shell scrub of it is opted out via SCRUB_SSH_AUTH_SOCK_ENABLED above.
     "GIT_ASKPASS": "",
     "VSCODE_GIT_IPC_HANDLE": "",
     "VSCODE_GIT_ASKPASS_MAIN": "",
@@ -97,7 +79,7 @@
     "BROWSER": "",
     "GPG_AGENT_INFO": ""
   },
-  "remoteUser": "${localEnv:USER}",
+  "remoteUser": "vscode",
   "service": "workspace",
   "workspaceFolder": "/workspace"
 }

@@ -1,8 +1,6 @@
 services:
   workspace:
     build:
-      args:
-        USERNAME: '${USER}'
       context: .
       dockerfile: Dockerfile
     deploy:
@@ -10,81 +8,72 @@ services:
         limits:
           cpus: '6'
           memory: 6g
-    # Entrypoint reaps VS Code's CLI/git IPC sockets (vscode-ipc-*.sock, vscode-git-*.sock) so
-    # untrusted code can't reach them, then runs `command`. Requires devcontainer.json
-    # overrideCommand:false so VS Code keeps OUR entrypoint instead of replacing it. See SECURITY.md.
-    entrypoint: ['/usr/local/bin/workspace-entrypoint']
+    # base ships reap-vscode-sockets: it reaps VS Code's CLI/git IPC sockets, then runs
+    # `command`. Requires devcontainer.json overrideCommand:false so VS Code keeps it.
+    entrypoint: ['/usr/local/bin/reap-vscode-sockets']
     command: ['sleep', 'infinity']
-    # Bridge networking (NOT network_mode/ipc: host) so the agent doesn't share the host's network
-    # and IPC namespaces. VS Code forwards container ports over the existing SSH tunnel
-    # (devcontainer.json forwardPorts); the sidecar communicates via the /creds volume, not the
-    # network. host.docker.internal still reaches host services; workspace:127.0.0.1 keeps the
-    # container hostname resolvable (replaces the old sudo-based 00-configure-hosts step).
+    # Bridge networking (NOT network_mode/ipc: host) so the workspace doesn't share the
+    # host's network/IPC namespaces. host.docker.internal reaches host services;
+    # workspace:127.0.0.1 keeps the container hostname resolvable.
     extra_hosts:
       - 'host.docker.internal:host-gateway'
       - 'workspace:127.0.0.1'
     hostname: workspace
     shm_size: 1g
-    # Untrusted-code hardening: drop all Linux capabilities and block setuid privilege escalation
-    # (which also disables sudo — there is no sudoers grant). Add back a specific cap only if a
-    # tool genuinely needs it.
+    # Untrusted-code hardening: drop all Linux capabilities and block setuid escalation
+    # (base already removes sudo). Add a specific cap back only if a tool genuinely needs it.
     cap_drop:
       - ALL
     security_opt:
       - 'no-new-privileges:true'
     volumes:
       - ..:/workspace:cached
-      - ${HOME}/.bash_history:/home/${USER}/.bash_history:cached
-      - ${HOME}/.claude:/home/${USER}/.claude:cached
-      - ${HOME}/.claude.json:/home/${USER}/.claude.json:cached
-      # commit-signing key only, read-only — NOT the whole ~/.ssh (no authorized_keys, no other
-      # private keys).
-      - ${HOME}/.ssh/id_ed25519:/home/${USER}/.ssh/id_ed25519:ro
-      - ${HOME}/.ssh/id_ed25519.pub:/home/${USER}/.ssh/id_ed25519.pub:ro
-      # The credentials shelf: the sidecar vends narrow, short-lived credentials here; the
-      # workspace (agents included) can only read them. See twin-digital/opus#164 context.
+      - ${HOME}/.bash_history:/home/vscode/.bash_history:cached
+      - ${HOME}/.claude:/home/vscode/.claude:cached
+      - ${HOME}/.claude.json:/home/vscode/.claude.json:cached
+      # commit-signing key only, read-only — NOT the whole ~/.ssh.
+      - ${HOME}/.ssh/id_ed25519:/home/vscode/.ssh/id_ed25519:ro
+      - ${HOME}/.ssh/id_ed25519.pub:/home/vscode/.ssh/id_ed25519.pub:ro
+      # The credentials shelf: the sidecars vend narrow, short-lived credentials here; the
+      # workspace (agents included) can only read them. base's devcred/git/gh/aws shims read it.
       - creds-shelf:/creds:ro
 
-  # Admin sidecar — the human's privileged environment (SSO sessions, personal GitHub identity,
-  # lpass/ansible/terraform). Its home lives on a private volume the workspace never mounts.
-  # Enter from a HOST terminal: `docker exec -it admin-sidecar bash` (or VS Code "Attach to
-  # Running Container"). No sshd; host Docker access is the gate. The main process is
-  # vend-daemon, which runs the credential vend loops (`docker logs admin-sidecar`).
-  admin-sidecar:
-    build:
-      args:
-        USERNAME: '${USER}'
-      context: admin-sidecar
-      dockerfile: Dockerfile
-    command: ['vend-daemon']
-    container_name: admin-sidecar
-    environment:
-      # No reachable localhost callback in here (bridge network, no VS Code forwarding) — the
-      # dotfiles aws-refresh-sso helper honors this and uses the SSO device-code flow.
-      AWS_SSO_USE_DEVICE_CODE: '1'
-      # Space-separated profiles (in the admin user's ~/.aws/config) whose credentials are vended
-      # to the agents. The first doubles as [default]; agents pick others via AWS_PROFILE=<name>.
-      VEND_AWS_PROFILES: 084828575849-developer-ai-agent
-      # GitHub App token minting — config COMMON to every installation (the signing key never
-      # leaves KMS; the minting profile holds kms:Sign, agents do not). WHICH installations to
-      # vend, and each one's repos/perms, live in admin-sidecar/github-installations.json (one
-      # vend loop per entry — see "Adding repos and orgs" in README.md).
-      VEND_GH_APP_ID: '3967552'
-      VEND_GH_KMS_KEY_ID: alias/github-app-signer
-      # Holds kms:Sign on the signing key
-      VEND_GH_AWS_PROFILE: 253490790167-developer-tool-user
-      VEND_GH_AWS_REGION: us-east-1
-    hostname: admin-sidecar
+  # ── credential sidecars (toolkit images) — vend short-lived scoped creds to the shelf ────
+  # They share `admin-home`, so a single `aws sso login` serves both; that home (the SSO
+  # session) is mounted into NO consumer. Enter from a HOST terminal to log in:
+  #   docker exec -it <project>-credentials-aws-1 aws sso login --profile <profile>
+  credentials-aws:
+    image: ghcr.io/skleinjung/devcontainers/credential-shelf-aws:latest
     init: true
     restart: unless-stopped
+    environment:
+      # No reachable localhost callback in here (bridge net) — use the SSO device-code flow.
+      AWS_SSO_USE_DEVICE_CODE: '1'
+      # Space-separated ~/.aws/config profiles to vend; the first also becomes [default].
+      VEND_AWS_PROFILES: 084828575849-developer-ai-agent
     volumes:
-      - admin-home:/home/${USER}
+      - admin-home:/home/vscode
       - creds-shelf:/creds
-      - ..:/workspace:cached
+
+  credentials-github:
+    # Derived image that bakes github-creds/installations.json (which orgs/repos to vend) —
+    # a reviewed rebuild, not a /workspace bind-mount.
+    build: ./github-creds
+    init: true
+    restart: unless-stopped
+    environment:
+      AWS_SSO_USE_DEVICE_CODE: '1'
+      VEND_GH_APP_ID: '3967552'
+      VEND_GH_KMS_KEY_ID: alias/github-app-signer
+      # Holds kms:Sign on the signing key (the App key never leaves KMS).
+      VEND_GH_AWS_PROFILE: 253490790167-developer-tool-user
+      VEND_GH_AWS_REGION: us-east-1
+    volumes:
+      - admin-home:/home/vscode
+      - creds-shelf:/creds
 
 volumes:
-  # Written only by the admin sidecar's vend scripts; read-only in the workspace.
+  # Written only by the credential sidecars; read-only in the workspace.
   creds-shelf:
-  # The admin sidecar's $HOME (SSO cache, gh/lpass state, dotfiles). Never mounted into the
-  # workspace.
+  # The sidecars' shared $HOME (SSO cache + ~/.aws). Never mounted into the workspace.
   admin-home:

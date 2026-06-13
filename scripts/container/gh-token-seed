@@ -1,29 +1,19 @@
 #!/usr/bin/env bash
 #
-# gh-token-seed — verify a usable GitHub token is on the /creds shelf.
-#
-# Run by the Claude SessionStart hook to surface credential problems at session start instead of
-# mid-task. Checks the default token (GH_DEFAULT_ORG, or the sole vended org). Exits 0 when it is
-# fresh; exits non-zero with a one-line reason when it is missing or stale (vend loop stalled,
-# sidecar down, shelf not mounted) so the hook warns. Tokens are vended by the admin sidecar;
-# nothing here can mint or refresh anything.
+# gh-token-seed — Claude SessionStart check: surface credential problems at session start
+# instead of mid-task. Exits 0 when a usable GitHub token is on the shelf for GH_DEFAULT_ORG,
+# else non-zero with a one-line reason. Resolves via base's `devcred`; nothing here mints or
+# refreshes — the credential sidecar vends.
 #
 set -euo pipefail
 
-SKEW="${GH_TOKEN_SKEW:-300}" # treat as stale when < 5 min remaining
-now=$(date +%s)
+org="${GH_DEFAULT_ORG:-}"
+[ -n "$org" ] || { echo "GH_DEFAULT_ORG is not set" >&2; exit 1; }
 
-shelf="$(gh-shelf-resolve 2>/dev/null || true)"
-if [ -z "$shelf" ]; then
-  echo "no default GitHub token: set GH_DEFAULT_ORG, or vend exactly one org (vended: $(ls /creds/github 2>/dev/null | tr '\n' ' ' || echo none))" >&2
-  exit 1
+if [ -n "$(devcred get "github/$org" 2>/dev/null || true)" ]; then
+  exit 0
 fi
 
-if line="$(cat "$shelf" 2>/dev/null)" && [ -n "$line" ]; then
-  exp="${line%% *}"
-  if [ -n "$exp" ] && [ "$exp" -gt "$((now + SKEW))" ] 2>/dev/null; then exit 0; fi
-  echo "shelf token $shelf is stale; vend status: $(cat "/creds/status/github-$(basename "$shelf")" 2>/dev/null || echo unknown)" >&2
-  exit 1
-fi
-echo "no shelf token at $shelf; is the admin sidecar vending? (docker logs admin-sidecar)" >&2
+echo "no valid GitHub token for org '$org' — is a credential sidecar attached and logged in?" >&2
+echo "  check: cat /creds/status/*   (and 'aws sso login' in the credentials-aws sidecar)" >&2
 exit 1
